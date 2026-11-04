@@ -9,9 +9,14 @@ import {
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "./App.css";
+const API =
+  import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
-const API = "http://localhost:5000/api";
-const SERVER_URL = "http://localhost:5000";
+const SERVER_URL =
+  import.meta.env.VITE_SERVER_URL ||
+  (import.meta.env.VITE_API_URL
+    ? import.meta.env.VITE_API_URL.replace(/\/api\/?$/, "")
+    : "http://localhost:5000");
 
 const markerIcon = L.icon({
   iconUrl:
@@ -517,55 +522,90 @@ function updateBookingDetail(field, value) {
   // ---------------- MEDIA UPLOAD ----------------
 
   async function handleMediaUpload(activityId, file) {
-    if (!file) return;
+  if (!file) return;
 
-    const allowedTypes = [
-      "image/jpeg",
-      "image/png",
-      "image/gif",
-      "image/webp",
-      "video/mp4",
-      "video/webm",
-      "video/quicktime"
-    ];
+  const allowedTypes = [
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "video/mp4",
+    "video/webm",
+    "video/quicktime"
+  ];
 
-    if (!allowedTypes.includes(file.type)) {
-      alert("Please select a supported image or video file.");
-      return;
-    }
-
-    if (file.size > 50 * 1024 * 1024) {
-      alert("File size must be less than 50 MB.");
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append("media", file);
-
-    try {
-      const response = await fetch(
-        `${API}/trips/${selectedTrip._id}/activities/${activityId}/media`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`
-          },
-          body: formData
-        }
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.message || "Upload failed");
-      }
-
-      await fetchTrips();
-      alert("Media uploaded successfully!");
-    } catch (error) {
-      alert(error.message);
-    }
+  if (!allowedTypes.includes(file.type)) {
+    alert("Please select a supported image or video file.");
+    return;
   }
+
+  if (file.size > 50 * 1024 * 1024) {
+    alert("File size must be less than 50 MB.");
+    return;
+  }
+
+  try {
+    const resourceType = file.type.startsWith("video/")
+      ? "video"
+      : "image";
+
+    // 1. Get secure upload signature from backend
+    const signatureData = await apiRequest(
+      `${API}/trips/${selectedTrip._id}/activities/${activityId}/media/sign`,
+      {
+        method: "POST",
+        body: JSON.stringify({ resourceType })
+      }
+    );
+
+    // 2. Upload file directly to Cloudinary
+    const formData = new FormData();
+
+    formData.append("file", file);
+    formData.append("api_key", signatureData.apiKey);
+    formData.append("timestamp", signatureData.timestamp);
+    formData.append("signature", signatureData.signature);
+    formData.append("folder", signatureData.folder);
+    formData.append("public_id", signatureData.publicId);
+
+    const cloudinaryResponse = await fetch(
+      `https://api.cloudinary.com/v1_1/${signatureData.cloudName}/${resourceType}/upload`,
+      {
+        method: "POST",
+        body: formData
+      }
+    );
+
+    const cloudinaryData = await cloudinaryResponse.json();
+
+    if (!cloudinaryResponse.ok) {
+      throw new Error(
+        cloudinaryData.error?.message || "Cloudinary upload failed."
+      );
+    }
+
+    // 3. Save media details in MongoDB
+    await apiRequest(
+      `${API}/trips/${selectedTrip._id}/activities/${activityId}/media`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          publicId: cloudinaryData.public_id,
+          secureUrl: cloudinaryData.secure_url,
+          originalName: file.name,
+          mimetype: file.type,
+          resourceType: cloudinaryData.resource_type
+        })
+      }
+    );
+
+    await fetchTrips();
+    alert("Media uploaded successfully!");
+
+  } catch (error) {
+    alert(error.message);
+  }
+}
 
   async function deleteMedia(activityId, mediaId) {
     if (!window.confirm("Delete this media file?")) return;

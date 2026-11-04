@@ -1,74 +1,23 @@
-
 import express from "express";
-import multer from "multer";
-import path from "path";
-import fs from "fs";
 import crypto from "crypto";
-import { fileURLToPath } from "url";
+import cloudinary from "../config/cloudinary.js";
 
 import Trip from "../models/Trip.js";
 import authMiddleware from "../middleware/authMiddleware.js";
 
 const router = express.Router();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 // --------------------------------------------------
-// FILE UPLOAD CONFIGURATION
+// CLOUDINARY MEDIA HELPER
 // --------------------------------------------------
 
-const uploadDirectory = path.join(__dirname, "../uploads");
+const deleteCloudinaryMedia = async (media) => {
+  if (!media?.publicId) return;
 
-if (!fs.existsSync(uploadDirectory)) {
-  fs.mkdirSync(uploadDirectory, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDirectory);
-  },
-
-  filename: (req, file, cb) => {
-    const uniqueName =
-      Date.now() +
-      "-" +
-      crypto.randomBytes(6).toString("hex") +
-      path.extname(file.originalname).toLowerCase();
-
-    cb(null, uniqueName);
-  }
-});
-
-const allowedMimeTypes = [
-  "image/jpeg",
-  "image/png",
-  "image/gif",
-  "image/webp",
-  "video/mp4",
-  "video/webm",
-  "video/quicktime"
-];
-
-const upload = multer({
-  storage,
-
-  limits: {
-    fileSize: 50 * 1024 * 1024
-  },
-
-  fileFilter: (req, file, cb) => {
-    if (allowedMimeTypes.includes(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(
-        new Error(
-          "Only JPG, PNG, GIF, WEBP, MP4, WEBM and MOV files are allowed."
-        )
-      );
-    }
-  }
-});
+  await cloudinary.uploader.destroy(media.publicId, {
+    resource_type: media.resourceType || "image"
+  });
+};
 
 // --------------------------------------------------
 // HELPER: CHECK TRIP OWNERSHIP
@@ -186,18 +135,10 @@ router.get("/:tripId", authMiddleware, getOwnedTrip, (req, res) => {
 
 router.delete("/:tripId", authMiddleware, getOwnedTrip, async (req, res) => {
   try {
-    // Delete uploaded files belonging to this trip
+    // Delete uploaded media from Cloudinary
     for (const activity of req.trip.activities) {
       for (const media of activity.media) {
-        const filename = path.basename(media.filename || "");
-
-        if (filename) {
-          const filePath = path.join(uploadDirectory, filename);
-
-          if (fs.existsSync(filePath)) {
-            fs.unlinkSync(filePath);
-          }
-        }
+        await deleteCloudinaryMedia(media);
       }
     }
 
@@ -247,12 +188,6 @@ router.put(
 // POST /api/trips/:tripId/activities
 // --------------------------------------------------
 
-
-// --------------------------------------------------
-// ADD ACTIVITY
-// POST /api/trips/:tripId/activities
-// --------------------------------------------------
-
 router.post(
   "/:tripId/activities",
   authMiddleware,
@@ -267,14 +202,12 @@ router.post(
         notes
       } = req.body;
 
-      // Check activity title and date
       if (!title || !title.trim() || !date) {
         return res.status(400).json({
           message: "Activity title and valid date are required."
         });
       }
 
-      // Convert date strings into UTC date-only values
       const toDateOnly = (value) => {
         const parsed = new Date(value);
 
@@ -305,7 +238,6 @@ router.post(
         });
       }
 
-      // Automatically calculate the day number
       const dayNumber =
         Math.floor(
           (activityDate - tripStartDate) / (1000 * 60 * 60 * 24)
@@ -329,7 +261,6 @@ router.post(
         message: "Activity added successfully.",
         trip: req.trip
       });
-
     } catch (error) {
       res.status(500).json({
         message: "Failed to add activity.",
@@ -338,7 +269,6 @@ router.post(
     }
   }
 );
-
 
 // --------------------------------------------------
 // EDIT ACTIVITY
@@ -418,17 +348,9 @@ router.delete(
         });
       }
 
-      // Remove activity media files from uploads folder
+      // Delete activity media from Cloudinary
       for (const media of activity.media) {
-        const filename = path.basename(media.filename || "");
-
-        if (filename) {
-          const filePath = path.join(uploadDirectory, filename);
-
-          if (fs.existsSync(filePath)) {
-            fs.unlinkSync(filePath);
-          }
-        }
+        await deleteCloudinaryMedia(media);
       }
 
       activity.deleteOne();
@@ -449,51 +371,106 @@ router.delete(
 );
 
 // --------------------------------------------------
-// UPLOAD PHOTO OR VIDEO TO AN ACTIVITY
+// CREATE CLOUDINARY UPLOAD SIGNATURE
+// POST /api/trips/:tripId/activities/:activityId/media/sign
+// --------------------------------------------------
+
+router.post(
+  "/:tripId/activities/:activityId/media/sign",
+  authMiddleware,
+  getOwnedTrip,
+  async (req, res) => {
+    try {
+      const activity = req.trip.activities.id(req.params.activityId);
+
+      if (!activity) {
+        return res.status(404).json({
+          message: "Activity not found."
+        });
+      }
+
+      const resourceType =
+        req.body.resourceType === "video" ? "video" : "image";
+
+      const timestamp = Math.round(Date.now() / 1000);
+      const folder = "travel-storyboard";
+
+      const publicId =
+        `${req.userId}/${req.params.tripId}/${req.params.activityId}/` +
+        `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`;
+
+      const paramsToSign = {
+        timestamp,
+        folder,
+        public_id: publicId
+      };
+
+      const signature = cloudinary.utils.api_sign_request(
+        paramsToSign,
+        process.env.CLOUDINARY_API_SECRET
+      );
+
+      res.json({
+        signature,
+        timestamp,
+        folder,
+        publicId,
+        resourceType,
+        cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+        apiKey: process.env.CLOUDINARY_API_KEY
+      });
+    } catch (error) {
+      res.status(500).json({
+        message: "Unable to prepare media upload.",
+        error: error.message
+      });
+    }
+  }
+);
+
+// --------------------------------------------------
+// SAVE CLOUDINARY MEDIA DETAILS
 // POST /api/trips/:tripId/activities/:activityId/media
-// FormData field name: media
 // --------------------------------------------------
 
 router.post(
   "/:tripId/activities/:activityId/media",
   authMiddleware,
   getOwnedTrip,
-  (req, res, next) => {
-    upload.single("media")(req, res, (error) => {
-      if (error) {
-        return res.status(400).json({
-          message: error.message
-        });
-      }
-
-      next();
-    });
-  },
   async (req, res) => {
     try {
       const activity = req.trip.activities.id(req.params.activityId);
 
       if (!activity) {
-        if (req.file) {
-          fs.unlinkSync(req.file.path);
-        }
-
         return res.status(404).json({
           message: "Activity not found."
         });
       }
 
-      if (!req.file) {
+      const {
+        publicId,
+        secureUrl,
+        originalName,
+        mimetype,
+        resourceType
+      } = req.body;
+
+      if (!publicId || !secureUrl || !originalName || !mimetype) {
         return res.status(400).json({
-          message: "Please select a photo or video."
+          message: "Cloudinary media details are incomplete."
         });
       }
 
+      const safeResourceType =
+        resourceType === "video" ? "video" : "image";
+
       const mediaItem = {
-        filename: req.file.filename,
-        originalName: req.file.originalname,
-        path: `/uploads/${req.file.filename}`,
-        mimetype: req.file.mimetype
+        filename: publicId.split("/").pop(),
+        originalName,
+        path: secureUrl,
+        mimetype,
+        publicId,
+        resourceType: safeResourceType
       };
 
       activity.media.push(mediaItem);
@@ -502,16 +479,12 @@ router.post(
 
       res.status(201).json({
         message: "Media uploaded successfully.",
-        media: mediaItem,
+        media: activity.media[activity.media.length - 1],
         trip: req.trip
       });
     } catch (error) {
-      if (req.file && fs.existsSync(req.file.path)) {
-        fs.unlinkSync(req.file.path);
-      }
-
       res.status(500).json({
-        message: "Media upload failed.",
+        message: "Media details could not be saved.",
         error: error.message
       });
     }
@@ -545,15 +518,8 @@ router.delete(
         });
       }
 
-      const filename = path.basename(media.filename || "");
-
-      if (filename) {
-        const filePath = path.join(uploadDirectory, filename);
-
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
-      }
+      // Delete media from Cloudinary
+      await deleteCloudinaryMedia(media);
 
       media.deleteOne();
 
@@ -576,7 +542,6 @@ router.delete(
 // ADD BOOKING
 // POST /api/trips/:tripId/bookings
 // --------------------------------------------------
-
 
 router.post(
   "/:tripId/bookings",
@@ -627,12 +592,10 @@ router.post(
   }
 );
 
-
 // --------------------------------------------------
 // EDIT BOOKING
 // PUT /api/trips/:tripId/bookings/:bookingId
 // --------------------------------------------------
-
 
 router.put(
   "/:tripId/bookings/:bookingId",
@@ -681,7 +644,6 @@ router.put(
     }
   }
 );
-
 
 // --------------------------------------------------
 // DELETE BOOKING
@@ -741,7 +703,10 @@ router.post(
       res.json({
         message: "Travel story sharing is enabled.",
         shareToken: req.trip.shareToken,
-        shareUrl: `${req.protocol}://${req.get("host")}/shared/${req.trip.shareToken}`
+        shareUrl: `${
+          process.env.FRONTEND_URL ||
+          `${req.protocol}://${req.get("host")}`
+        }/shared/${req.trip.shareToken}`
       });
     } catch (error) {
       res.status(500).json({
@@ -809,8 +774,5 @@ router.get("/share/:shareToken", async (req, res) => {
     });
   }
 });
-
-
-
 
 export default router;

@@ -7,7 +7,13 @@ const mediaSchema = new mongoose.Schema(
     filename: String,
     originalName: String,
     path: String,
-    mimetype: String
+    mimetype: String,
+    publicId: String,
+    resourceType: {
+      type: String,
+      enum: ["image", "video", "raw"],
+      default: "image"
+    }
   },
   { timestamps: true }
 );
