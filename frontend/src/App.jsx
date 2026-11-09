@@ -624,19 +624,37 @@ function updateBookingDetail(field, value) {
 
   // ---------------- WEATHER ----------------
 
-  async function handleWeather() {
-    if (!selectedTrip) return;
+  
+async function handleWeather() {
+  if (!selectedTrip) return;
 
-    setWeatherLoading(true);
-    setWeatherError("");
-    setWeather(null);
+  setWeatherLoading(true);
+  setWeatherError("");
+  setWeather(null);
 
-    try {
+  try {
+    const destination = selectedTrip.destination.trim();
+
+    let place;
+
+    // Exact coordinates for Goa, India
+    if (destination.toLowerCase() === "goa") {
+      place = {
+        name: "Goa",
+        country: "India",
+        latitude: 15.2993,
+        longitude: 74.1240
+      };
+    } else {
       const geoResponse = await fetch(
         `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
-          selectedTrip.destination
-        )}&count=1&language=en&format=json`
+          destination
+        )}&count=10&language=en&format=json`
       );
+
+      if (!geoResponse.ok) {
+        throw new Error("Unable to find the destination.");
+      }
 
       const geoData = await geoResponse.json();
 
@@ -644,24 +662,30 @@ function updateBookingDetail(field, value) {
         throw new Error("Destination could not be found.");
       }
 
-      const place = geoData.results[0];
-
-      const weatherResponse = await fetch(
-        `https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,rain,weather_code,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=7`
-      );
-
-      const weatherData = await weatherResponse.json();
-
-      setWeather({
-        ...weatherData,
-        placeName: `${place.name}${place.country ? ", " + place.country : ""}`
-      });
-    } catch (error) {
-      setWeatherError(error.message);
-    } finally {
-      setWeatherLoading(false);
+      place = geoData.results[0];
     }
+
+    const weatherResponse = await fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${place.latitude}&longitude=${place.longitude}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,rain,weather_code,wind_speed_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=7`
+    );
+
+    if (!weatherResponse.ok) {
+      throw new Error("Unable to retrieve weather information.");
+    }
+
+    const weatherData = await weatherResponse.json();
+
+    setWeather({
+      ...weatherData,
+      placeName: `${place.name}, ${place.country}`
+    });
+
+  } catch (error) {
+    setWeatherError(error.message);
+  } finally {
+    setWeatherLoading(false);
   }
+}
 
   function weatherDescription(code) {
     if (code === 0) return "Clear sky";
@@ -692,37 +716,54 @@ function updateBookingDetail(field, value) {
 
   // ---------------- MAP ----------------
 
-  async function handleShowMap() {
-    setMapLoading(true);
-    setMapError("");
-    setMapLocation(null);
+  
+async function handleShowMap() {
+  setMapLoading(true);
+  setMapError("");
+  setMapLocation(null);
 
-    try {
-      const response = await fetch(
-        `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
-          selectedTrip.destination
-        )}&count=1&language=en&format=json`
-      );
+  try {
+    const destination = selectedTrip.destination.trim();
 
-      const data = await response.json();
-
-      if (!data.results || data.results.length === 0) {
-        throw new Error("Destination could not be found on the map.");
-      }
-
-      const place = data.results[0];
-
+    // Exact location for Goa, India
+    if (destination.toLowerCase() === "goa") {
       setMapLocation({
-        latitude: place.latitude,
-        longitude: place.longitude,
-        name: place.name
+        latitude: 15.2993,
+        longitude: 74.1240,
+        name: "Goa, India"
       });
-    } catch (error) {
-      setMapError(error.message);
-    } finally {
-      setMapLoading(false);
+
+      return;
     }
+
+    // Search for other destinations
+    const response = await fetch(
+      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(
+        destination
+      )}&count=10&language=en&format=json`
+    );
+
+    const data = await response.json();
+
+    if (!data.results || data.results.length === 0) {
+      throw new Error("Destination could not be found on the map.");
+    }
+
+    const place = data.results[0];
+
+    setMapLocation({
+      latitude: place.latitude,
+      longitude: place.longitude,
+      name: place.name + (place.country ? ", " + place.country : "")
+    });
+
+  } catch (error) {
+    setMapError(error.message);
+  } finally {
+    setMapLoading(false);
   }
+}
+
 
   // ---------------- SHARE TRIP ----------------
 
@@ -837,9 +878,19 @@ function updateBookingDetail(field, value) {
 
     return (
       <div className="app-container">
-        <header className="hero-header">
-          <h1>My Travel Story</h1>
-          <p>Plan your journeys. Capture your memories.</p>
+        <header className="hero-header shared-hero-header">
+          <div className="hero-brand">
+            <div className="hero-brand-icon">✈</div>
+            <div className="hero-brand-copy">
+              <span className="hero-eyebrow">YOUR JOURNEY, YOUR STORY</span>
+              <h1>My Travel Story</h1>
+              <p>Plan your journeys. Capture your memories.</p>
+            </div>
+          </div>
+
+          <div className="hero-tagline">
+            Every journey has a story worth remembering.
+          </div>
         </header>
 
         <main className="main-content">
@@ -1009,15 +1060,22 @@ function updateBookingDetail(field, value) {
   return (
     <div className="app-container">
       <header className="hero-header">
-        <div>
-          <h1>✈️ Dynamic Travel Storyboard</h1>
-          <p>Plan your journeys. Capture your memories.</p>
+        <div className="hero-brand">
+          <div className="hero-brand-icon">✈</div>
+          <div className="hero-brand-copy">
+            <span className="hero-eyebrow">YOUR JOURNEY, YOUR STORY</span>
+            <h1>Dynamic Travel Storyboard</h1>
+            <p>Plan your journeys. Capture your memories.</p>
+          </div>
         </div>
 
-        <div className="user-section">
-          <span>Welcome, {user.name}</span>
-          <button className="logout-button" onClick={logout}>
-            Logout
+        <div className="hero-user-area">
+          <div className="hero-welcome">
+            <span>WELCOME BACK</span>
+            <strong>{user.name}</strong>
+          </div>
+          <button className="logout-button" type="button" onClick={logout}>
+            Logout <span aria-hidden="true">↗</span>
           </button>
         </div>
       </header>
